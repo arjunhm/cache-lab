@@ -1,5 +1,6 @@
 #include "cachelab.h"
 #include <getopt.h>
+#include <limits.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -7,6 +8,16 @@
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
+
+int v = 0;
+
+#ifdef DEBUG
+#define DEBUG_PRINT(x) printf x
+#else
+#define DEBUG_PRINT(x)                                                         \
+  do {                                                                         \
+  } while (0)
+#endif
 
 #define ADDRESS_LENGTH 64
 #define u64 uint64_t
@@ -127,32 +138,43 @@ u64 get_tag(Cache *c, u64 address) {
 }
 
 int evict(Cache *c, int set_index) {
-  int min_timestamp = time(NULL);
+  u64 min_timestamp = ULONG_MAX;
   int line_index = -1;
 
   for (int i = 0; i < c->line_count; i++) {
-    if (c->sets[set_index].lines[i].timestamp < min_timestamp) {
+    DEBUG_PRINT(("ei=%d-time=%ld\tmin_time=%ld\n", i,
+                 c->sets[set_index].lines[i].timestamp, min_timestamp));
+    if (c->sets[set_index].lines[i].timestamp <= min_timestamp) {
+      DEBUG_PRINT(("min_timestamp updated\n"));
       min_timestamp = c->sets[set_index].lines[i].timestamp;
       line_index = i;
+      DEBUG_PRINT(("li1=%d\n", line_index));
     }
   }
 
   if (c->sets[set_index].lines[line_index].valid) {
     c->stats->evictions++;
+    if (v)
+      printf("eviction ");
   }
-
+  DEBUG_PRINT(("li2=%d\n", line_index));
   return line_index;
 }
 
 void cache_read(Cache *c, u64 address, int size) {
-  usleep(500*1000);
+  DEBUG_PRINT(("------\n"));
+  DEBUG_PRINT(("addr=%lx\n", address));
+  // usleep(500*1000);
   int set_index = get_set_index(c, address);
   u64 tag = get_tag(c, address);
+  DEBUG_PRINT(("set=%d\ttag=%ld\n", set_index, tag));
 
   for (int i = 0; i < c->line_count; i++) {
     if (c->sets[set_index].lines[i].valid == 1 &&
         c->sets[set_index].lines[i].tag == tag) {
       c->sets[set_index].lines[i].timestamp = time(NULL);
+      if (v)
+        printf("hit ");
       c->stats->hits++;
       return;
     }
@@ -160,6 +182,8 @@ void cache_read(Cache *c, u64 address, int size) {
 
   // miss
   c->stats->misses++;
+  if (v)
+    printf("miss ");
   int line_index = evict(c, set_index);
   // replace
   c->sets[set_index].lines[line_index].valid = 1;
@@ -167,7 +191,19 @@ void cache_read(Cache *c, u64 address, int size) {
   c->sets[set_index].lines[line_index].timestamp = time(NULL);
 }
 
-void print_usage() { printf("hello\n"); }
+void printUsage(char *argv[]) {
+  printf("Options:\n");
+  printf("  -h         Print this help message.\n");
+  printf("  -v         Optional verbose flag.\n");
+  printf("  -s <num>   Number of set index bits.\n");
+  printf("  -E <num>   Number of lines per set.\n");
+  printf("  -b <num>   Number of block offset bits.\n");
+  printf("  -t <file>  Trace file.\n");
+  printf("\nExamples:\n");
+  printf("  linux>  %s -s 4 -E 1 -b 4 -t traces/yi.trace\n", argv[0]);
+  printf("  linux>  %s -v -s 8 -E 2 -b 4 -t traces/yi.trace\n", argv[0]);
+  exit(0);
+}
 
 void run_trace(Cache *c, char *trace_file) {
   FILE *fp = fopen(trace_file, "r");
@@ -175,6 +211,12 @@ void run_trace(Cache *c, char *trace_file) {
   u64 address;
   int size;
   while (fscanf(fp, " %c %lx,%d", &command, &address, &size) == 3) {
+    DEBUG_PRINT(("%c %lx %d\n", command, address, size));
+    if (v) {
+      if (command == 'I')
+        continue;
+      printf("%c %lx,%d ", command, address, size);
+    }
     switch (command) {
     case 'L':
       cache_read(c, address, size);
@@ -189,13 +231,14 @@ void run_trace(Cache *c, char *trace_file) {
     default:
       break;
     }
+    if (v && command != 'I')
+      printf("\n");
   }
 
   fclose(fp);
 }
 
 int main(int argc, char **argv) {
-  int v = 0;
   int s = 0;            // set bits
   int E = 0;            // # of lines
   int b = 0;            // block bits
@@ -220,14 +263,15 @@ int main(int argc, char **argv) {
       v = 1;
       break;
     case 'h':
-      print_usage();
+      printUsage(argv);
       return 0;
     default:
-      print_usage();
+      printUsage(argv);
       return 0;
     }
   }
 
+  DEBUG_PRINT(("%d-%d-%d\n", s, E, b));
   Cache *c = cache_new(s, E, b);
   run_trace(c, trace_file);
   printSummary(c->stats->hits, c->stats->misses, c->stats->evictions);
