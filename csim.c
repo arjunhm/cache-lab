@@ -9,8 +9,6 @@
 #include <time.h>
 #include <unistd.h>
 
-int v = 0;
-
 #ifdef DEBUG
 #define DEBUG_PRINT(x) printf x
 #else
@@ -22,6 +20,9 @@ int v = 0;
 #define ADDRESS_LENGTH 64
 #define u64 uint64_t
 
+int v = 0;
+u64 lru_counter = 1;
+
 typedef struct Stats {
   int hits;
   int misses;
@@ -31,7 +32,7 @@ typedef struct Stats {
 typedef struct Line {
   int valid;
   u64 tag;
-  u64 timestamp;
+  u64 lru;
 } Line;
 
 typedef struct Set {
@@ -104,7 +105,7 @@ Cache *cache_new(int s, int E, int b) {
     for (int j = 0; j < E; j++) {
       c->sets[i].lines[j].valid = 0;
       c->sets[i].lines[j].tag = 0;
-      c->sets[i].lines[j].timestamp = 0;
+      c->sets[i].lines[j].lru = 0;
     }
   }
 
@@ -138,17 +139,14 @@ u64 get_tag(Cache *c, u64 address) {
 }
 
 int evict(Cache *c, int set_index) {
-  u64 min_timestamp = ULONG_MAX;
-  int line_index = -1;
+  u64 min_lru = ULONG_MAX;
+  int line_index = 0;
 
   for (int i = 0; i < c->line_count; i++) {
-    DEBUG_PRINT(("ei=%d-time=%ld\tmin_time=%ld\n", i,
-                 c->sets[set_index].lines[i].timestamp, min_timestamp));
-    if (c->sets[set_index].lines[i].timestamp <= min_timestamp) {
-      DEBUG_PRINT(("min_timestamp updated\n"));
-      min_timestamp = c->sets[set_index].lines[i].timestamp;
+    Line l = c->sets[set_index].lines[i];
+    if (l.lru < min_lru) {
+      min_lru = l.lru;
       line_index = i;
-      DEBUG_PRINT(("li1=%d\n", line_index));
     }
   }
 
@@ -157,24 +155,17 @@ int evict(Cache *c, int set_index) {
     if (v)
       printf("eviction ");
   }
-  DEBUG_PRINT(("li2=%d\n", line_index));
   return line_index;
 }
 
 void cache_read(Cache *c, u64 address, int size) {
-  DEBUG_PRINT(("------\n"));
-  DEBUG_PRINT(("addr=%lx\n", address));
-  // usleep(500*1000);
   int set_index = get_set_index(c, address);
   u64 tag = get_tag(c, address);
-  DEBUG_PRINT(("set=%d\ttag=%ld\n", set_index, tag));
 
   for (int i = 0; i < c->line_count; i++) {
     if (c->sets[set_index].lines[i].valid == 1 &&
         c->sets[set_index].lines[i].tag == tag) {
-      c->sets[set_index].lines[i].timestamp = time(NULL);
-      if (v)
-        printf("hit ");
+      c->sets[set_index].lines[i].lru = lru_counter++;
       c->stats->hits++;
       return;
     }
@@ -182,13 +173,13 @@ void cache_read(Cache *c, u64 address, int size) {
 
   // miss
   c->stats->misses++;
-  if (v)
-    printf("miss ");
+
   int line_index = evict(c, set_index);
   // replace
   c->sets[set_index].lines[line_index].valid = 1;
   c->sets[set_index].lines[line_index].tag = tag;
-  c->sets[set_index].lines[line_index].timestamp = time(NULL);
+  c->sets[set_index].lines[line_index].lru = lru_counter++;
+  ;
 }
 
 void printUsage(char *argv[]) {
